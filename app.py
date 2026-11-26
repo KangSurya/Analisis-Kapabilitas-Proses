@@ -303,7 +303,7 @@ def chart_title(container, text):
 
 
 # ------------------------------------------------------------ halaman
-def page_home(df, A_ka, A_cc, bsb_ka, bsa_ka, bsa_cc):
+def page_home(df, A_ka, A_cc, bsb_ka, bsa_ka, bsb_cc, bsa_cc):
     view = st.selectbox("Tampilan", ["Grafik", "Tabular"], label_visibility="collapsed")
     c = st.columns(5)
     cap_ka, cap_cc = A_ka["cap"], A_cc["cap"]
@@ -312,7 +312,8 @@ def page_home(df, A_ka, A_cc, bsb_ka, bsa_ka, bsa_cc):
     kpi(c[2], "Rata-rata Cacat", "mean gram", f"{df['jumlah_cacat'].mean():.1f}")
     kpi(c[3], "Kadar Air", "Cp / Cpk",
         f"{cap_ka['cp']:.2f} / {cap_ka['cpk']:.2f}" if cap_ka else "N/A")
-    kpi(c[4], "Jumlah Cacat", "Cpk (satu sisi)", f"{cap_cc['cpk']:.2f}" if cap_cc else "N/A")
+    kpi(c[4], "Jumlah Cacat", "Cp / Cpk",
+        f"{cap_cc['cp']:.2f} / {cap_cc['cpk']:.2f}" if cap_cc else "N/A")
     st.markdown("---")
 
     if view == "Tabular":
@@ -321,7 +322,7 @@ def page_home(df, A_ka, A_cc, bsb_ka, bsa_ka, bsa_cc):
 
     ka, cc = df["kadar_air"], df["jumlah_cacat"]
     ka_ok = (ka >= bsb_ka) & (ka <= bsa_ka)
-    cc_ok = cc <= bsa_cc
+    cc_ok = (cc >= bsb_cc) & (cc <= bsa_cc)
     l, r = st.columns(2)
     chart_title(l, "Kadar Air per Produksi (%)")
     fig = go.Figure(go.Scatter(x=df["no"], y=ka, mode="lines+markers", line=dict(color="#00A6E8")))
@@ -341,20 +342,21 @@ def page_home(df, A_ka, A_cc, bsb_ka, bsa_ka, bsa_cc):
     show(r, fig2, width="stretch")
 
 
-def page_cacat(df, bsb_ka, bsa_ka, bsa_cc, berat):
+def page_cacat(df, bsb_ka, bsa_ka, bsb_cc, bsa_cc, berat):
     ka, cc = df["kadar_air"], df["jumlah_cacat"]
     bawah, atas = int((ka < bsb_ka).sum()), int((ka > bsa_ka).sum())
-    cc_gagal = int((cc > bsa_cc).sum())
+    cc_bawah, cc_atas = int((cc < bsb_cc).sum()), int((cc > bsa_cc).sum())
     ka_ok = (ka >= bsb_ka) & (ka <= bsa_ka)
-    cc_ok = cc <= bsa_cc
+    cc_ok = (cc >= bsb_cc) & (cc <= bsa_cc)
     st.caption("Dihitung dari seluruh batch pada periode terpilih (termasuk titik yang dihapus dari peta kendali).")
     p1, p2, p3 = st.columns(3)
     show(p1, px.pie(names=["Di bawah BSB", "Di atas BSA", "Sesuai"],
                     values=[bawah, atas, len(df) - bawah - atas], hole=0.35, title="Kadar air",
                     color_discrete_sequence=["#ff7f0e", "#d62728", "#00A6E8"]), width="stretch")
-    show(p2, px.pie(names=["Di atas BSA", "Sesuai"], values=[cc_gagal, len(df) - cc_gagal],
+    show(p2, px.pie(names=["Di bawah BSB", "Di atas BSA", "Sesuai"],
+                    values=[cc_bawah, cc_atas, len(df) - cc_bawah - cc_atas],
                     hole=0.35, title="Jumlah cacat",
-                    color_discrete_sequence=["#d62728", "#00A6E8"]), width="stretch")
+                    color_discrete_sequence=["#ff7f0e", "#d62728", "#00A6E8"]), width="stretch")
     show(p3, px.pie(names=["Lolos keduanya", "Gagal kadar air saja", "Gagal cacat saja", "Gagal keduanya"],
                     values=[int((ka_ok & cc_ok).sum()), int((~ka_ok & cc_ok).sum()),
                             int((ka_ok & ~cc_ok).sum()), int((~ka_ok & ~cc_ok).sum())],
@@ -365,13 +367,15 @@ def page_cacat(df, bsb_ka, bsa_ka, bsa_cc, berat):
                   title=f"Persentase cacat per batch (gram / {berat:g} g x 100%)",
                   color_discrete_sequence=["#00A6E8"])
     fig.add_hline(y=bsa_cc / berat * 100, line_dash="dash", line_color="red", annotation_text="BSA")
+    if bsb_cc > 0:
+        fig.add_hline(y=bsb_cc / berat * 100, line_dash="dash", line_color="orange", annotation_text="BSB")
     show(st, fig, width="stretch")
     st.write(f"Rata-rata cacat: **{pct['cacat_pct'].mean():.2f}%** dari berat sampel.")
 
 
-def page_export(df, A_ka, A_cc, bsb_ka, bsa_ka, bsa_cc):
+def page_export(df, A_ka, A_cc, bsb_ka, bsa_ka, bsb_cc, bsa_cc):
     summ = pd.DataFrame([cap_row("Kadar Air", A_ka, bsa_ka, bsb_ka),
-                         cap_row("Jumlah Cacat", A_cc, bsa_cc, None)])
+                         cap_row("Jumlah Cacat", A_cc, bsa_cc, bsb_cc)])
     st.dataframe(summ, width="stretch", hide_index=True)
     removed = pd.DataFrame([dict(variabel=n, **r) for n, A in
                             [("Kadar Air", A_ka), ("Jumlah Cacat", A_cc)] for r in A["removed"]])
@@ -387,11 +391,13 @@ def page_export(df, A_ka, A_cc, bsb_ka, bsa_ka, bsa_cc):
 
 
 # ------------------------------------------------------------ main
-def load_data(file, bsb_ka, bsa_ka, d_start, d_end):
+def load_data(file, bsb_ka, bsa_ka, bsb_cc, bsa_cc, d_start, d_end):
     if file is None:
         raise ValueError("Silakan upload file terlebih dahulu.")
     if bsb_ka >= bsa_ka:
         raise ValueError("BSB kadar air harus lebih kecil dari BSA.")
+    if bsb_cc >= bsa_cc:
+        raise ValueError("BSB jumlah cacat harus lebih kecil dari BSA.")
     if d_start > d_end:
         raise ValueError("Tanggal mulai harus sebelum tanggal akhir.")
     raw = pd.read_excel(file)
@@ -424,6 +430,7 @@ def main():
         st.markdown('<div class="side-title">Input Parameter</div>', unsafe_allow_html=True)
         bsb_ka = st.number_input("BSB Kadar Air (%)", value=10.0, step=0.1)
         bsa_ka = st.number_input("BSA Kadar Air (%)", value=15.0, step=0.1)
+        bsb_cc = st.number_input("BSB Jumlah Cacat (gram)", value=0.0, step=1.0)
         bsa_cc = st.number_input("BSA Jumlah Cacat (gram)", value=60.0, step=1.0)
         berat = st.number_input("Berat sampel uji (gram)", value=300.0, step=10.0)
         c1, c2 = st.columns(2)
@@ -451,9 +458,9 @@ def main():
     if update:
         st.session_state["ready"] = False
         try:
-            raw = load_data(file, bsb_ka, bsa_ka, d_start, d_end)
+            raw = load_data(file, bsb_ka, bsa_ka, bsb_cc, bsa_cc, d_start, d_end)
             st.session_state.update(ready=True, df=raw, bsb_ka=bsb_ka, bsa_ka=bsa_ka,
-                                    bsa_cc=bsa_cc, berat=berat)
+                                    bsb_cc=bsb_cc, bsa_cc=bsa_cc, berat=berat)
         except Exception as e:
             st.error(str(e))
 
@@ -462,21 +469,22 @@ def main():
         return
 
     S = st.session_state
-    df, bsb_ka, bsa_ka, bsa_cc, berat = S["df"], S["bsb_ka"], S["bsa_ka"], S["bsa_cc"], S["berat"]
+    df, bsb_ka, bsa_ka, berat = S["df"], S["bsb_ka"], S["bsa_ka"], S["berat"]
+    bsb_cc, bsa_cc = S.get("bsb_cc", 0.0), S["bsa_cc"]
     A_ka = analyze(df, "kadar_air", bsa_ka, bsb_ka, S.get("tfp_kadar_air", True))
-    A_cc = analyze(df, "jumlah_cacat", bsa_cc, None, S.get("tfp_jumlah_cacat", True))
+    A_cc = analyze(df, "jumlah_cacat", bsa_cc, bsb_cc, S.get("tfp_jumlah_cacat", True))
 
     st.header(f"Page: {page}")
     if page == "Home":
-        page_home(df, A_ka, A_cc, bsb_ka, bsa_ka, bsa_cc)
+        page_home(df, A_ka, A_cc, bsb_ka, bsa_ka, bsb_cc, bsa_cc)
     elif page == "Kadar Air":
         render_variable("Kadar Air (%)", "kadar_air", bsa_ka, bsb_ka, A_ka)
     elif page == "Jumlah Cacat":
-        render_variable("Jumlah Cacat (gram)", "jumlah_cacat", bsa_cc, None, A_cc)
+        render_variable("Jumlah Cacat (gram)", "jumlah_cacat", bsa_cc, bsb_cc, A_cc)
     elif page == "Cacat (%)":
-        page_cacat(df, bsb_ka, bsa_ka, bsa_cc, berat)
+        page_cacat(df, bsb_ka, bsa_ka, bsb_cc, bsa_cc, berat)
     else:
-        page_export(df, A_ka, A_cc, bsb_ka, bsa_ka, bsa_cc)
+        page_export(df, A_ka, A_cc, bsb_ka, bsa_ka, bsb_cc, bsa_cc)
 
 
 main()
