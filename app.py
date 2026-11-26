@@ -1,5 +1,7 @@
+import base64
 import io
 import itertools
+import os
 
 import numpy as np
 import pandas as pd
@@ -9,6 +11,7 @@ import streamlit as st
 from plotly.subplots import make_subplots
 from scipy import stats
 from statsmodels.stats.diagnostic import lilliefors
+from streamlit_option_menu import option_menu
 
 # ------------------------------------------------------------ konstanta
 D2, D4 = 1.128, 3.267  # n = 2 (D3 = 0)
@@ -118,7 +121,7 @@ def plot_imr(res, label):
     rows = [("MR", "CL_MR", "UCL_MR", "LCL_MR", "OOC_MR"), ("X", "CL_I", "UCL_I", "LCL_I", "OOC_I")]
     for r, (v, cl, ucl, lcl, ooc) in enumerate(rows, start=1):
         fig.add_trace(go.Scatter(x=res["no"], y=res[v], mode="lines+markers",
-                                 line=dict(color="#1f77b4")), row=r, col=1)
+                                 line=dict(color="#00A6E8")), row=r, col=1)
         bad = res[res[ooc]]
         fig.add_trace(go.Scatter(x=bad["no"], y=bad[v], mode="markers",
                                  marker=dict(color="red", size=11, symbol="x")), row=r, col=1)
@@ -133,7 +136,7 @@ def plot_imr(res, label):
 def qq_fig(x, title):
     (osm, osr), (slope, icpt, _) = stats.probplot(x, dist="norm")
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=osm, y=osr, mode="markers", name="Data"))
+    fig.add_trace(go.Scatter(x=osm, y=osr, mode="markers", name="Data", marker=dict(color="#00A6E8")))
     fig.add_trace(go.Scatter(x=osm, y=slope * osm + icpt, mode="lines", name="Garis normal"))
     fig.update_layout(title=title, height=330, showlegend=False, margin=dict(t=40, b=10),
                       xaxis_title="Kuantil teoritis", yaxis_title="Kuantil sampel")
@@ -141,17 +144,28 @@ def qq_fig(x, title):
 
 
 def hist_fig(x, title):
-    fig = go.Figure(go.Histogram(x=x, nbinsx=12))
+    fig = go.Figure(go.Histogram(x=x, nbinsx=12, marker_color="#0090D0"))
     fig.update_layout(title=title, height=330, margin=dict(t=40, b=10))
     return fig
 
 
 _cnt = itertools.count()
+GRID = "rgba(255,255,255,0.10)"
+
+
+def style_fig(fig):
+    """Tema gelap transparan agar menyatu dengan latar dashboard."""
+    fig.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)",
+                      plot_bgcolor="rgba(0,0,0,0)", font=dict(color="white"),
+                      title=dict(font=dict(size=16), x=0))
+    fig.update_xaxes(gridcolor=GRID, zerolinecolor=GRID)
+    fig.update_yaxes(gridcolor=GRID, zerolinecolor=GRID)
+    return fig
 
 
 def show(container, fig, **kw):
     """plotly_chart dengan key unik agar tidak bentrok antar grafik."""
-    container.plotly_chart(fig, key=f"pc{next(_cnt)}", **kw)
+    container.plotly_chart(style_fig(fig), key=f"pc{next(_cnt)}", **kw)
 
 
 def fmt(v, nd=3):
@@ -172,10 +186,9 @@ def cap_row(name, A, bsa, bsb):
     return row
 
 
-# ------------------------------------------------------------ antarmuka
-def render_variable(label, col, bsa, bsb, df):
-    use_tf = st.session_state.get(f"tf_{col}", True)
-    A = analyze(df, col, bsa, bsb, use_tf)
+
+# ------------------------------------------------------------ halaman variabel
+def render_variable(label, col, bsa, bsb, A):
 
     st.markdown("#### 1. Peta kendali MR dan I")
     if A["removed"]:
@@ -202,7 +215,9 @@ def render_variable(label, col, bsa, bsb, df):
     st.write(f"Data asli: D = {stat0:.4f}, p-value = {p0:.4f} "
              f"({'normal' if p0 > ALPHA else 'tidak normal'}, α = {ALPHA})")
     if p0 <= ALPHA:
-        st.toggle("Terapkan transformasi (hanya untuk Cp dan Cpk)", value=True, key=f"tf_{col}")
+        v = st.toggle("Terapkan transformasi (hanya untuk Cp dan Cpk)",
+                      value=st.session_state.get(f"tfp_{col}", True), key=f"tf_{col}")
+        st.session_state[f"tfp_{col}"] = v
     c1, c2 = st.columns(2)
     show(c1, hist_fig(x, "Histogram data asli"), width="stretch")
     show(c2, qq_fig(x, "Q-Q plot data asli"), width="stretch")
@@ -238,55 +253,205 @@ def render_variable(label, col, bsa, bsb, df):
         "Proses KAPABEL (indeks > 1)" if key > 1 else "Proses TIDAK KAPABEL (indeks ≤ 1)")
     return A
 
+# ------------------------------------------------------------ tampilan
+CSS = """
+<style>
+.stApp, [data-testid="stAppViewContainer"] {background-color:#00152A;}
+[data-testid="stHeader"] {background:rgba(0,0,0,0);}
+[data-testid="stSidebar"] {background-color:#003B73;}
+[data-testid="stSidebar"] [data-baseweb="input"],
+[data-testid="stSidebar"] [data-baseweb="base-input"] {background-color:#00152A !important;}
+[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] {background-color:#0A2A4D;}
+.side-sub {text-align:center;color:#cfe0f3;font-size:.9rem;margin:-4px 0 22px 0;}
+.side-title {font-size:1.5rem;font-weight:700;margin:6px 0 4px 0;color:#fff;}
+.kpi-head {background:#0B3A6B;border-radius:4px;padding:14px 16px;font-size:1.05rem;color:#fff;}
+.kpi-cap {margin-top:18px;font-size:.9rem;color:#dbe7f3;}
+.kpi-val {font-size:2.3rem;font-weight:600;color:#fff;line-height:1.25;}
+.chart-title {font-weight:700;font-size:1.05rem;margin:28px 0 -6px 8px;color:#fff;}
+h1, h2, h3, h4 {color:#fff;}
+hr {border-color:rgba(255,255,255,0.15);}
+</style>
+"""
+
+LOGO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 250">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0" stop-color="#F0245F"/><stop offset="1" stop-color="#2F6BFF"/></linearGradient></defs>
+<polygon points="150,8 236,56 236,150 150,198 64,150 64,56" fill="none" stroke="url(#g)" stroke-width="16"/>
+<polygon points="150,58 196,84 196,128 150,154 104,128 104,84" fill="none" stroke="url(#g)" stroke-width="12"/>
+<text x="150" y="236" text-anchor="middle" font-family="Arial" font-weight="800" font-size="22"
+ textLength="280" lengthAdjust="spacingAndGlyphs"><tspan fill="#E91E63">KHATULISTIWA </tspan><tspan fill="#2F8BFF">COFFEE</tspan></text>
+</svg>"""
+
+
+def sidebar_logo():
+    if os.path.exists("logo.png"):  # ganti dengan logo perusahaan jika ada
+        st.image("logo.png", width="stretch")
+    else:
+        b64 = base64.b64encode(LOGO_SVG.encode()).decode()
+        st.markdown(f'<img src="data:image/svg+xml;base64,{b64}" style="width:100%;padding:0 10px;">',
+                    unsafe_allow_html=True)
+    st.markdown('<div class="side-sub">Online Analytics</div>', unsafe_allow_html=True)
+
+
+def kpi(container, label, caption, value):
+    container.markdown(f'<div class="kpi-head">📌 {label}</div><div class="kpi-cap">{caption}</div>'
+                       f'<div class="kpi-val">{value}</div>', unsafe_allow_html=True)
+
+
+def chart_title(container, text):
+    container.markdown(f'<div class="chart-title">{text}</div>', unsafe_allow_html=True)
+
+
+# ------------------------------------------------------------ halaman
+def page_home(df, A_ka, A_cc, bsb_ka, bsa_ka, bsa_cc):
+    view = st.selectbox("Tampilan", ["Grafik", "Tabular"], label_visibility="collapsed")
+    c = st.columns(5)
+    cap_ka, cap_cc = A_ka["cap"], A_cc["cap"]
+    kpi(c[0], "Jumlah Produksi", "batch", len(df))
+    kpi(c[1], "Rata-rata Kadar Air", "mean %", f"{df['kadar_air'].mean():.2f}")
+    kpi(c[2], "Rata-rata Cacat", "mean gram", f"{df['jumlah_cacat'].mean():.1f}")
+    kpi(c[3], "Kadar Air", "Cp / Cpk",
+        f"{cap_ka['cp']:.2f} / {cap_ka['cpk']:.2f}" if cap_ka else "N/A")
+    kpi(c[4], "Jumlah Cacat", "Cpk (satu sisi)", f"{cap_cc['cpk']:.2f}" if cap_cc else "N/A")
+    st.markdown("---")
+
+    if view == "Tabular":
+        st.dataframe(df, width="stretch", hide_index=True)
+        return
+
+    ka, cc = df["kadar_air"], df["jumlah_cacat"]
+    ka_ok = (ka >= bsb_ka) & (ka <= bsa_ka)
+    cc_ok = cc <= bsa_cc
+    l, r = st.columns(2)
+    chart_title(l, "Kadar Air per Produksi (%)")
+    fig = go.Figure(go.Scatter(x=df["no"], y=ka, mode="lines+markers", line=dict(color="#00A6E8")))
+    for v, t in [(bsb_ka, "BSB"), (bsa_ka, "BSA")]:
+        fig.add_hline(y=v, line_dash="dash", line_color="red", annotation_text=t)
+    fig.update_layout(height=380, margin=dict(t=20), xaxis_title="Produksi ke-", yaxis_title="Kadar air (%)")
+    show(l, fig, width="stretch")
+
+    chart_title(r, "Status Batch terhadap Spesifikasi")
+    status = pd.DataFrame({
+        "Status": ["Lolos keduanya", "Gagal kadar air saja", "Gagal cacat saja", "Gagal keduanya"],
+        "Jumlah": [int((ka_ok & cc_ok).sum()), int((~ka_ok & cc_ok).sum()),
+                   int((ka_ok & ~cc_ok).sum()), int((~ka_ok & ~cc_ok).sum())]})
+    fig2 = px.bar(status.iloc[::-1], x="Jumlah", y="Status", orientation="h",
+                  color_discrete_sequence=["#0090D0"])
+    fig2.update_layout(height=380, margin=dict(t=20))
+    show(r, fig2, width="stretch")
+
+
+def page_cacat(df, bsb_ka, bsa_ka, bsa_cc, berat):
+    ka, cc = df["kadar_air"], df["jumlah_cacat"]
+    bawah, atas = int((ka < bsb_ka).sum()), int((ka > bsa_ka).sum())
+    cc_gagal = int((cc > bsa_cc).sum())
+    ka_ok = (ka >= bsb_ka) & (ka <= bsa_ka)
+    cc_ok = cc <= bsa_cc
+    st.caption("Dihitung dari seluruh batch pada periode terpilih (termasuk titik yang dihapus dari peta kendali).")
+    p1, p2, p3 = st.columns(3)
+    show(p1, px.pie(names=["Di bawah BSB", "Di atas BSA", "Sesuai"],
+                    values=[bawah, atas, len(df) - bawah - atas], hole=0.35, title="Kadar air",
+                    color_discrete_sequence=["#ff7f0e", "#d62728", "#00A6E8"]), width="stretch")
+    show(p2, px.pie(names=["Di atas BSA", "Sesuai"], values=[cc_gagal, len(df) - cc_gagal],
+                    hole=0.35, title="Jumlah cacat",
+                    color_discrete_sequence=["#d62728", "#00A6E8"]), width="stretch")
+    show(p3, px.pie(names=["Lolos keduanya", "Gagal kadar air saja", "Gagal cacat saja", "Gagal keduanya"],
+                    values=[int((ka_ok & cc_ok).sum()), int((~ka_ok & cc_ok).sum()),
+                            int((ka_ok & ~cc_ok).sum()), int((~ka_ok & ~cc_ok).sum())],
+                    hole=0.35, title="Gabungan",
+                    color_discrete_sequence=["#00A6E8", "#ff7f0e", "#9467bd", "#d62728"]), width="stretch")
+    pct = df.assign(cacat_pct=cc / berat * 100)
+    fig = px.line(pct, x="no", y="cacat_pct", markers=True,
+                  title=f"Persentase cacat per batch (gram / {berat:g} g x 100%)",
+                  color_discrete_sequence=["#00A6E8"])
+    fig.add_hline(y=bsa_cc / berat * 100, line_dash="dash", line_color="red", annotation_text="BSA")
+    show(st, fig, width="stretch")
+    st.write(f"Rata-rata cacat: **{pct['cacat_pct'].mean():.2f}%** dari berat sampel.")
+
+
+def page_export(df, A_ka, A_cc, bsb_ka, bsa_ka, bsa_cc):
+    summ = pd.DataFrame([cap_row("Kadar Air", A_ka, bsa_ka, bsb_ka),
+                         cap_row("Jumlah Cacat", A_cc, bsa_cc, None)])
+    st.dataframe(summ, width="stretch", hide_index=True)
+    removed = pd.DataFrame([dict(variabel=n, **r) for n, A in
+                            [("Kadar Air", A_ka), ("Jumlah Cacat", A_cc)] for r in A["removed"]])
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
+        A_ka["res"].to_excel(w, sheet_name="IMR_Kadar_Air", index=False)
+        A_cc["res"].to_excel(w, sheet_name="IMR_Jumlah_Cacat", index=False)
+        removed.to_excel(w, sheet_name="Titik_Dihapus", index=False)
+        summ.to_excel(w, sheet_name="Kapabilitas", index=False)
+        df.to_excel(w, sheet_name="Data_Asli", index=False)
+    st.download_button("Export hasil ke Excel", buf.getvalue(), "hasil_analisis.xlsx",
+                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+# ------------------------------------------------------------ main
+def load_data(file, bsb_ka, bsa_ka, d_start, d_end):
+    if file is None:
+        raise ValueError("Silakan upload file terlebih dahulu.")
+    if bsb_ka >= bsa_ka:
+        raise ValueError("BSB kadar air harus lebih kecil dari BSA.")
+    if d_start > d_end:
+        raise ValueError("Tanggal mulai harus sebelum tanggal akhir.")
+    raw = pd.read_excel(file)
+    raw.columns = [str(c).strip().lower() for c in raw.columns]
+    miss = [c for c in COLS if c not in raw.columns]
+    if miss:
+        raise ValueError(f"Kolom tidak ditemukan: {miss}. Gunakan template.")
+    raw = raw[COLS].copy()
+    raw["tanggal"] = pd.to_datetime(raw["tanggal"], errors="coerce")
+    for c in ["no", "kadar_air", "jumlah_cacat"]:
+        raw[c] = pd.to_numeric(raw[c], errors="coerce")
+    raw = raw.dropna()
+    if ((raw["kadar_air"] < 0) | (raw["kadar_air"] > 100) | (raw["jumlah_cacat"] < 0)).any():
+        raise ValueError("Terdapat nilai tidak valid (kadar air di luar 0-100 atau cacat negatif).")
+    raw = raw[(raw["tanggal"].dt.date >= d_start) & (raw["tanggal"].dt.date <= d_end)]
+    raw = raw.sort_values("tanggal").reset_index(drop=True)
+    if len(raw) < MIN_N:
+        raise ValueError(f"Data pada periode terpilih kurang dari {MIN_N} observasi.")
+    return raw
+
 
 def main():
     global _cnt
     _cnt = itertools.count()
-    st.set_page_config(page_title="Dashboard Kapabilitas Proses", layout="wide")
-    st.title("Dashboard Kapabilitas Proses Kopi Arabika Natural Anaerobic")
+    st.set_page_config(page_title="Dashboard", page_icon="☕", layout="wide")
+    st.markdown(CSS, unsafe_allow_html=True)
 
     with st.sidebar:
-        st.header("Input Parameter")
-        st.markdown("**Kadar air (%)**")
-        bsb_ka = st.number_input("BSB", value=10.0, step=0.1)
-        bsa_ka = st.number_input("BSA", value=15.0, step=0.1)
-        st.markdown("**Jumlah cacat (gram)**")
-        bsa_cc = st.number_input("BSA (spesifikasi satu sisi)", value=60.0, step=1.0)
+        sidebar_logo()
+        st.markdown('<div class="side-title">Input Parameter</div>', unsafe_allow_html=True)
+        bsb_ka = st.number_input("BSB Kadar Air (%)", value=10.0, step=0.1)
+        bsa_ka = st.number_input("BSA Kadar Air (%)", value=15.0, step=0.1)
+        bsa_cc = st.number_input("BSA Jumlah Cacat (gram)", value=60.0, step=1.0)
         berat = st.number_input("Berat sampel uji (gram)", value=300.0, step=10.0)
-        st.markdown("**Periode**")
         c1, c2 = st.columns(2)
         d_start = c1.date_input("Mulai", value=pd.to_datetime("2025-10-01"))
         d_end = c2.date_input("Akhir", value=pd.to_datetime("2026-06-30"))
         file = st.file_uploader("Upload data (.xlsx)", type=["xlsx"])
         st.download_button("Download Template", make_template(), "template_data.xlsx",
-                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           width="stretch")
         update = st.button("Update", type="primary", width="stretch")
+        st.write("")
+        page = option_menu(
+            "Main Menu", ["Home", "Kadar Air", "Jumlah Cacat", "Cacat (%)", "Export"],
+            icons=["house", "droplet", "box-seam", "pie-chart", "download"],
+            menu_icon="display", default_index=0,
+            styles={"container": {"padding": "12px", "background-color": "#0A2A4D", "border-radius": "10px"},
+                    "menu-title": {"color": "white", "font-size": "24px"},
+                    "icon": {"color": "white", "font-size": "18px"},
+                    "nav-link": {"color": "white", "font-size": "17px", "text-align": "left",
+                                 "margin": "3px 0", "--hover-color": "#17508F"},
+                    "nav-link-selected": {"background-color": "#1B4F8A"}})
+
+    st.title("☕ Dashboard Kapabilitas Proses Kopi Arabika")
 
     if update:
         st.session_state["ready"] = False
         try:
-            if file is None:
-                raise ValueError("Silakan upload file terlebih dahulu.")
-            if bsb_ka >= bsa_ka:
-                raise ValueError("BSB kadar air harus lebih kecil dari BSA.")
-            if d_start > d_end:
-                raise ValueError("Tanggal mulai harus sebelum tanggal akhir.")
-            raw = pd.read_excel(file)
-            raw.columns = [str(c).strip().lower() for c in raw.columns]
-            miss = [c for c in COLS if c not in raw.columns]
-            if miss:
-                raise ValueError(f"Kolom tidak ditemukan: {miss}. Gunakan template.")
-            raw = raw[COLS].copy()
-            raw["tanggal"] = pd.to_datetime(raw["tanggal"], errors="coerce")
-            for c in ["no", "kadar_air", "jumlah_cacat"]:
-                raw[c] = pd.to_numeric(raw[c], errors="coerce")
-            raw = raw.dropna()
-            if ((raw["kadar_air"] < 0) | (raw["kadar_air"] > 100) | (raw["jumlah_cacat"] < 0)).any():
-                raise ValueError("Terdapat nilai tidak valid (kadar air di luar 0-100 atau cacat negatif).")
-            raw = raw[(raw["tanggal"].dt.date >= d_start) & (raw["tanggal"].dt.date <= d_end)]
-            raw = raw.sort_values("tanggal").reset_index(drop=True)
-            if len(raw) < MIN_N:
-                raise ValueError(f"Data pada periode terpilih kurang dari {MIN_N} observasi.")
+            raw = load_data(file, bsb_ka, bsa_ka, d_start, d_end)
             st.session_state.update(ready=True, df=raw, bsb_ka=bsb_ka, bsa_ka=bsa_ka,
                                     bsa_cc=bsa_cc, berat=berat)
         except Exception as e:
@@ -298,57 +463,20 @@ def main():
 
     S = st.session_state
     df, bsb_ka, bsa_ka, bsa_cc, berat = S["df"], S["bsb_ka"], S["bsa_ka"], S["bsa_cc"], S["berat"]
+    A_ka = analyze(df, "kadar_air", bsa_ka, bsb_ka, S.get("tfp_kadar_air", True))
+    A_cc = analyze(df, "jumlah_cacat", bsa_cc, None, S.get("tfp_jumlah_cacat", True))
 
-    t1, t2, t3, t4 = st.tabs(["Kadar Air", "Jumlah Cacat", "Cacat (%)", "Ringkasan & Export"])
-    with t1:
-        A_ka = render_variable("Kadar Air (%)", "kadar_air", bsa_ka, bsb_ka, df)
-    with t2:
-        A_cc = render_variable("Jumlah Cacat (gram)", "jumlah_cacat", bsa_cc, None, df)
-
-    with t3:
-        ka, cc = df["kadar_air"], df["jumlah_cacat"]
-        bawah, atas = int((ka < bsb_ka).sum()), int((ka > bsa_ka).sum())
-        cc_gagal = int((cc > bsa_cc).sum())
-        ka_ok = (ka >= bsb_ka) & (ka <= bsa_ka)
-        cc_ok = cc <= bsa_cc
-        st.caption("Dihitung dari seluruh batch pada periode terpilih (termasuk titik yang dihapus dari peta kendali).")
-        p1, p2, p3 = st.columns(3)
-        show(p1, px.pie(names=["Di bawah BSB", "Di atas BSA", "Sesuai"],
-                               values=[bawah, atas, len(df) - bawah - atas], hole=0.35,
-                               title="Kadar air",
-                               color_discrete_sequence=["#ff7f0e", "#d62728", "#2ca02c"]),
-                        width="stretch")
-        show(p2, px.pie(names=["Di atas BSA", "Sesuai"], values=[cc_gagal, len(df) - cc_gagal],
-                               hole=0.35, title="Jumlah cacat",
-                               color_discrete_sequence=["#d62728", "#2ca02c"]), width="stretch")
-        show(p3, px.pie(names=["Lolos keduanya", "Gagal kadar air saja", "Gagal cacat saja", "Gagal keduanya"],
-                               values=[int((ka_ok & cc_ok).sum()), int((~ka_ok & cc_ok).sum()),
-                                       int((ka_ok & ~cc_ok).sum()), int((~ka_ok & ~cc_ok).sum())],
-                               hole=0.35, title="Gabungan",
-                               color_discrete_sequence=["#2ca02c", "#ff7f0e", "#9467bd", "#d62728"]),
-                        width="stretch")
-        pct = df.assign(cacat_pct=cc / berat * 100)
-        fig = px.line(pct, x="no", y="cacat_pct", markers=True,
-                      title=f"Persentase cacat per batch (gram / {berat:g} g x 100%)")
-        fig.add_hline(y=bsa_cc / berat * 100, line_dash="dash", line_color="red", annotation_text="BSA")
-        show(st, fig, width="stretch")
-        st.write(f"Rata-rata cacat: **{pct['cacat_pct'].mean():.2f}%** dari berat sampel.")
-
-    with t4:
-        rows = [cap_row("Kadar Air", A_ka, bsa_ka, bsb_ka), cap_row("Jumlah Cacat", A_cc, bsa_cc, None)]
-        summ = pd.DataFrame(rows)
-        st.dataframe(summ, width="stretch", hide_index=True)
-        removed = pd.DataFrame([dict(variabel=n, **r) for n, A in
-                                [("Kadar Air", A_ka), ("Jumlah Cacat", A_cc)] for r in A["removed"]])
-        buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
-            A_ka["res"].to_excel(w, sheet_name="IMR_Kadar_Air", index=False)
-            A_cc["res"].to_excel(w, sheet_name="IMR_Jumlah_Cacat", index=False)
-            removed.to_excel(w, sheet_name="Titik_Dihapus", index=False)
-            summ.to_excel(w, sheet_name="Kapabilitas", index=False)
-            df.to_excel(w, sheet_name="Data_Asli", index=False)
-        st.download_button("Export hasil ke Excel", buf.getvalue(), "hasil_analisis.xlsx",
-                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.header(f"Page: {page}")
+    if page == "Home":
+        page_home(df, A_ka, A_cc, bsb_ka, bsa_ka, bsa_cc)
+    elif page == "Kadar Air":
+        render_variable("Kadar Air (%)", "kadar_air", bsa_ka, bsb_ka, A_ka)
+    elif page == "Jumlah Cacat":
+        render_variable("Jumlah Cacat (gram)", "jumlah_cacat", bsa_cc, None, A_cc)
+    elif page == "Cacat (%)":
+        page_cacat(df, bsb_ka, bsa_ka, bsa_cc, berat)
+    else:
+        page_export(df, A_ka, A_cc, bsb_ka, bsa_ka, bsa_cc)
 
 
 main()
